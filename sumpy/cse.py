@@ -66,7 +66,7 @@ DAMAGE.
 
 # }}}
 
-from sympy.core import Basic, Mul, Add, Pow
+from symengine.sympy_compat import Basic, Mul, Add, Pow, Symbol
 from sympy.core.function import _coeff_isneg
 from sympy.core.compatibility import iterable
 from sympy.utilities.iterables import numbered_symbols
@@ -80,7 +80,12 @@ Common subexpression elimination
 .. autofunction:: cse
 
 """
+args_dict = dict()
 
+def get_args(expr):
+    if expr in args_dict:
+        return args_dict[expr]
+    return expr.args
 
 # {{{ cse pre/postprocessing
 
@@ -142,7 +147,7 @@ class FuncArgTracker(object):
         for func_i, func in enumerate(funcs):
             func_argset = set()
 
-            for func_arg in func.args:
+            for func_arg in get_args(func):
                 arg_number = self.get_or_add_value_number(func_arg)
                 func_argset.add(arg_number)
                 self.arg_to_funcset[arg_number].add(func_i)
@@ -250,7 +255,7 @@ def match_common_args(func_class, funcs, opt_subs):
 
     # Sort to ensure that whole-function subexpressions come before the items
     # that use them.
-    funcs = sorted(funcs, key=lambda f: len(f.args))
+    funcs = sorted(funcs, key=lambda f: len(get_args(f)))
     arg_tracker = FuncArgTracker(funcs)
 
     changed = set()
@@ -284,9 +289,10 @@ def match_common_args(func_class, funcs, opt_subs):
             diff_i = arg_tracker.func_to_argset[i].difference(com_args)
             if diff_i:
                 # com_func needs to be unevaluated to allow for recursive matches.
-                com_func = func_class(
-                        *arg_tracker.get_args_in_value_order(com_args),
-                        evaluate=False)
+                args_orig = arg_tracker.get_args_in_value_order(com_args)
+                t = func_class(*args_orig)
+                args_dict[t] = args_orig
+                com_func = t
                 com_func_number = arg_tracker.get_or_add_value_number(com_func)
                 arg_tracker.update_func_argset(i, diff_i | set([com_func_number]))
                 changed.add(i)
@@ -313,9 +319,10 @@ def match_common_args(func_class, funcs, opt_subs):
                 changed.add(k)
 
         if i in changed:
-            opt_subs[funcs[i]] = func_class(
-                *arg_tracker.get_args_in_value_order(arg_tracker.func_to_argset[i]),
-                evaluate=False)
+            args_orig = arg_tracker.get_args_in_value_order(arg_tracker.func_to_argset[i])
+            t = func_class(*args_orig)
+            args_dict[t] = args_orig
+            opt_subs[funcs[i]] = t
 
         arg_tracker.stop_arg_tracking(i)
 
@@ -355,13 +362,15 @@ def opt_cse(exprs):
 
         seen_subexp.add(expr)
 
-        for arg in expr.args:
+        for arg in get_args(expr):
             find_opts(arg)
 
         if _coeff_isneg(expr):
             neg_expr = -expr
             if not neg_expr.is_Atom:
-                opt_subs[expr] = Mul(-1, neg_expr, evaluate=False)
+                t = Mul(-1, neg_expr)
+                args_dict[t] = (-1, neg_expr)
+                opt_subs[expr] = t
                 seen_subexp.add(neg_expr)
                 expr = neg_expr
 
@@ -372,9 +381,11 @@ def opt_cse(exprs):
             adds.add(expr)
 
         elif isinstance(expr, Pow):
-            base, exp = expr.args
+            base, exp = get_args(expr)
             if _coeff_isneg(exp):
-                opt_subs[expr] = Pow(Pow(base, -exp), -1, evaluate=False)
+                t = Pow(Pow(base, -exp), -1)
+                args_dict[t] = (Pow(base, -exp), -1)
+                opt_subs[expr] = t
 
     # }}}
 
@@ -436,7 +447,7 @@ def tree_cse(exprs, symbols, opt_subs=None):
             if expr in opt_subs:
                 expr = opt_subs[expr]
 
-            args = expr.args
+            args = get_args(expr)
 
         for arg in args:
             find_repeated(arg)
@@ -460,7 +471,7 @@ def tree_cse(exprs, symbols, opt_subs=None):
         if not isinstance(expr, Basic):
             return expr
 
-        if not expr.args:
+        if not get_args(expr):
             return expr
 
         if iterable(expr):
@@ -474,8 +485,8 @@ def tree_cse(exprs, symbols, opt_subs=None):
         if expr in opt_subs:
             expr = opt_subs[expr]
 
-        new_args = [rebuild(arg) for arg in expr.args]
-        if new_args != expr.args:
+        new_args = [rebuild(arg) for arg in get_args(expr)]
+        if new_args != get_args(expr):
             new_expr = expr.func(*new_args)
         else:
             new_expr = expr
@@ -539,7 +550,7 @@ def cse(exprs, symbols=None, optimizations=None):
     reduced_exprs = [preprocess_for_cse(e, optimizations) for e in exprs]
 
     if symbols is None:
-        symbols = numbered_symbols()
+        symbols = numbered_symbols(cls=Symbol)
     else:
         # In case we get passed an iterable with an __iter__ method instead of
         # an actual iterator.
